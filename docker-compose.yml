@@ -197,6 +197,9 @@ services:
   cassandra:
     image: cassandra:4.1
     container_name: cassandra
+    environment:
+      - MAX_HEAP_SIZE=1024M
+      - HEAP_NEWSIZE=256M
     ports:
       - "9042:9042"
     volumes:
