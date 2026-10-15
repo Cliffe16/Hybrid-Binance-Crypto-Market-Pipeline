@@ -52,7 +52,7 @@ enriched_candlestick = raw_candlestick \
     .agg(
         avg("price").alias("avg_minute_price"),
         sum("trade_volume").alias("total_volume_min"),
-        coalesce(stddev("numeric_price"), lit(0.0)).alias("price_stddev"),
+        coalesce(stddev("price"), lit(0.0)).alias("price_stddev"),
         (max("price_high") - min("price_low")).alias("max_spread")
     ) 
 
