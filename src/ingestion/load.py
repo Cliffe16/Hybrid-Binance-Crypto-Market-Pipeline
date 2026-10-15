@@ -65,16 +65,16 @@ def load():
         
         # Define sqlalchemy engine
         engine = create_engine(config.POSTGRES_URL)
-        ticker_df.to_sql("tickers", con=engine, if_exists="append", index=False, chunksize=500)
+        ticker_df.to_sql("tickers", con=engine, if_exists="append", index=False, chunksize=500, method='multi')
         print(f"Tickers\n Rows: {len(ticker_df)} loaded")
 
-        trading_pairs_df.to_sql("trading_pairs", con=engine, if_exists="append", index=False, chunksize=500)
+        trading_pairs_df.to_sql("trading_pairs", con=engine, if_exists="append", index=False, chunksize=500, method='multi')
         print(f"Trading Pairs\n Rows: {len(trading_pairs_df)} loaded")
         
-        order_book_df.to_sql("order_books", con=engine, if_exists="append", index=False, chunksize=500)
+        order_book_df.to_sql("order_books", con=engine, if_exists="append", index=False, chunksize=100)
         print(f"Order Books\n Rows: {len(order_book_df)} loaded")
 
-        candlestick_df.to_sql("candlestick_data", con=engine, if_exists="append", index=False, chunksize=500)
+        candlestick_df.to_sql("candlestick_data", con=engine, if_exists="append", index=False, chunksize=1000)
         print(f"OHLC Data\n Rows: {len(candlestick_df)} loaded")
 
     except exc.IntegrityError as e:
