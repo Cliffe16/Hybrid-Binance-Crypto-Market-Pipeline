@@ -8,5 +8,5 @@ def read_kafka_topic(topic_name):
         .option("kafka.bootstrap.servers", "kafka:29092") \
         .option("subscribe", topic_name) \
         .option("startingOffsets", "earliest") \
-        .option("maxOffsetsPerTrigger", 5000) \
+        .option("maxOffsetsPerTrigger", 1000) \
         .load()
