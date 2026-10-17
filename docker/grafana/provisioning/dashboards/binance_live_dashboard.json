@@ -42,7 +42,7 @@
                     "hidden": false,
                     "query": {
                       "datasource": {
-                        "name": "eg1isuu43iby8b"
+                        "name": "binance-api-live-data"
                       },
                       "group": "marcusolsson-json-datasource",
                       "kind": "DataQuery",
@@ -231,7 +231,7 @@
                     "hidden": false,
                     "query": {
                       "datasource": {
-                        "name": "eg1isuu43iby8b"
+                        "name": "binance-api-live-data"
                       },
                       "group": "marcusolsson-json-datasource",
                       "kind": "DataQuery",
@@ -386,7 +386,7 @@
                     "hidden": false,
                     "query": {
                       "datasource": {
-                        "name": "eg1isuu43iby8b"
+                        "name": "binance-api-live-data"
                       },
                       "group": "marcusolsson-json-datasource",
                       "kind": "DataQuery",
