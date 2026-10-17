@@ -336,6 +336,23 @@ services:
     networks:
       - streaming_net
 
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      # Install the json api plugin on boot
+      - GF_INSTALL_PLUGINS=marcusolsson-json-datasource
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASS}
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning
+    extra_hosts:
+      # Allows  grafana to talk to teh host
+      - "host.docker.internal:host-gateway"
+    networks:
+      - streaming_net
+
 networks:
   streaming_net:
     driver: bridge
