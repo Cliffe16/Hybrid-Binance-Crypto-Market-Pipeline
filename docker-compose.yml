@@ -190,6 +190,9 @@ services:
       --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.0,org.apache.spark:spark-avro_2.12:3.4.0,com.datastax.spark:spark-cassandra-connector_2.12:3.4.1
       --py-files /app/src/processing/spark_schema.py
       --master spark://spark-master:7077 
+      --driver-memory 1G
+      --executor-memory 2G
+      --conf spark.memory.fraction=0.6
       /app/src/processing/spark_processor.py"
     depends_on:
       - spark-master
