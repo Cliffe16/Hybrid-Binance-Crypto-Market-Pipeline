@@ -71,7 +71,7 @@ def get_pairs(limit: int=100):
 
     return {"total_returned": len(results), "data": results}
 
-@app.get("/order-books/{symbol}"}
+@app.get("/order-books/{symbol}")
 def get_order_books(symbol: str, limit: int=5):
     """Fetch recent order book depth(Bids/Asks)"""
     query = f"SELECT * FROM order_books WHERE symbol='{symbol.upper()}' ORDER BY lastupdateid DESC LIMIT {limit}"
@@ -89,7 +89,7 @@ def get_order_books(symbol: str, limit: int=5):
             "bid_qty": getattr(row, 'bid_qty', None),
             "ask_price": getattr(row, 'ask_price', getattr(row, 'asks', None)),
             "ask_qty": getattr(row, 'ask_qty', None)
-            }]
+            })
 
         return {"symbol": symbol.upper(), "depth_points": len(results), "data": results}
 
