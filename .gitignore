@@ -4,6 +4,7 @@
 # Python cache
 __pycache__/
 *.pyc
+spark_cache/
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
