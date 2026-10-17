@@ -7,6 +7,11 @@ from src.utils.kafka_utils import read_kafka_topic
 
 spark = spark_session()
 
+# Optimize memory footprint for java runtime
+spark.conf.set("spark.sql.shuffle.partitions", "4") # Drop from 200 to 4
+spark.conf.set("spark.streaming.stopGracefullyOnShutdown", "true")
+spark.conf.set("spark.sql.streaming.minBatchesToRetain", "2") # Don't hold old batch metadata in RAM
+
 def fetch_schema(topic_name, retries=20):
     """Fetches the latest Avro schema from the Confluent Schema Registry."""
     url = f"http://schema-registry:8081/subjects/{topic_name}-value/versions/latest"
