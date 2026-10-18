@@ -27,7 +27,7 @@ graph TD
     H -->|JSON API| I[Grafana Trading Dashboard]
 ```
 
-## Data Flow Lifecycle
+## Data Flow 
 
 1. **Extraction & Orchestration (Airflow & Pandas):** 
    Airflow DAGs trigger Python scripts that hit Binance REST endpoints. To manage API rate limits across 3,700+ assets, the payload is paginated, flattened, and safely loaded into a PostgreSQL landing zone in chunks.
