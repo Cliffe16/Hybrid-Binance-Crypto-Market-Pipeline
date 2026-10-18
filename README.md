@@ -48,7 +48,7 @@ graph TD
 * Minimum 8GB RAM (12GB+ highly recommended)
 
 ### 1. Boot the Distributed Engine 
-Due to startup race conditions, this architecture must be booted in a strict 5-stage sequence. 
+Due to startup race conditions, this architecture must be booted in a strict 6-step sequence. 
 
 *(Note: JVM memory limits are hardcoded in `docker-compose.yml` to prevent local hardware CPU/RAM lockups)*
 
@@ -92,7 +92,7 @@ Navigate to the Airflow Web UI (`http://localhost:8080`), enable, and trigger th
 Install the API requirements and boot the ASGI server:
 ```bash
 uv pip install fastapi uvicorn cassandra-driver
-python api.py
+uv run python app.py
 ```
 
 ### 4. Monitor Live Data
