@@ -46,6 +46,10 @@ graph TD
 * Docker & Docker Compose
 * Python 3.12+ (managed via `uv` or `pip`)
 * Minimum 8GB RAM (12GB+ highly recommended)
+* **Environment Variables:** Copy the provided `env.example` file to `.env` and fill out the required credentials:
+  ```bash
+  cp env.example .env
+  ```
 
 ### 1. Boot the Distributed Engine 
 Due to startup race conditions, this architecture must be booted in a strict 6-step sequence. 
@@ -111,3 +115,8 @@ Building a distributed architecture comprising multiple interdependent nodes int
 * **Dependency Race Condition Resolution:**
   * *Challenge:* A blanket `docker compose up -d` caused Kafka to crash into an exponential backoff loop because ZooKeeper's JVM had not finished initializing its transaction logs.
   * *Solution:* Enforced a strict, 5-stage sequential boot process, ensuring the storage/coordination layer (ZooKeeper, Postgres) binds to ports before the messaging layer (Kafka) boots, preventing startup network isolation.
+
+## Next Steps
+
+While this pipeline is optimized for local hardware constraints, its decoupled microservice architecture maps natively to an enterprise cloud environment (e.g. Azure) for production scalability. This will be actualized eventually
+
