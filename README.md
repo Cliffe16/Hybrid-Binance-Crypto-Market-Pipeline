@@ -15,16 +15,10 @@ Thus demonstrating the ability to architect, tune, and deploy a decoupled micros
 
 ## System Architecture
 
-```mermaid
-graph TD
-    A[Binance API] -->|Batch Extraction| B(Apache Airflow)
-    B -->|Chunked Inserts| C[(PostgreSQL Landing Zone)]
-    C -->|CDC| D[Debezium]
-    D -->|Event Stream| E[Apache Kafka]
-    E -->|Micro-Batch Aggregation| F[Apache Spark Structured Streaming]
-    F -->|Write| G[(Apache Cassandra NoSQL)]
-    G -->|Query| H[FastAPI Serving Layer]
-    H -->|JSON API| I[Grafana Trading Dashboard]
+```
+            Binance/Kraken API → Airflow ingestion → PostgreSQL staging → Kafka
+                                                        ↓
+            Dashboard/API ← Cassandra serving ← Spark streaming processing
 ```
 
 ## Data Flow 
