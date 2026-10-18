@@ -27,12 +27,18 @@ Thus demonstrating the ability to architect, tune, and deploy a decoupled micros
    Airflow DAGs trigger Python scripts that hit Binance REST endpoints. To manage API rate limits across 3,700+ assets, the payload is paginated, flattened, and safely loaded into a PostgreSQL landing zone in chunks.
 2. **Change Data Capture (Debezium):** 
    Instead of querying the database for changes, Debezium monitors the PostgreSQL Write-Ahead Log (WAL). Any new market data is instantly captured and broadcasted as an event.
+
+![Debezium CDC Schema Capture](docs/schema_capture.png)
+
 3. **Message Broker (Kafka):** 
    Kafka acts as a buffer by taking in CDC (change data capture) events and separating the heavy data collection from the analytics system.
 4. **Stream Processing (PySpark):** 
    Apache Spark Structured Streaming consumes the Kafka topics in 30-second micro-batches. It applies schema casting, flattens nested JSON payloads, and calculates time-windowed aggregations(e.g. 1-minute max spread and volume).
 5. **Serving Layer (Cassandra & FastAPI):** 
    Processed metrics are written to Apache Cassandra, chosen for its high-write throughput. A decoupled FastAPI application acts as the serving layer, querying Cassandra and exposing RESTful endpoints (`/candlesticks`, `/order-books`, `/tickers`, `/trading_pairs`).
+
+![Cassandra Query Results](docs/cassandra_query.png)
+
 6. **Visualization (Grafana):** 
    A provisioned Grafana dashboard fetches data from the FastAPI layer, using binary transformations to calculate real-time percentage changes, offloading compute from the database.
 
@@ -71,6 +77,8 @@ docker compose up -d kafka-connect debezium-init
 docker compose up -d spark-master spark-worker spark-submitter
 ```
 
+![Spark Streaming Logs](docs/spark_logs.png)
+
 **Step 5: Airflow Orchestration**
 ```bash
 docker compose up -d airflow-init
@@ -96,6 +104,8 @@ uv run python app.py
 ### 4. Monitor Live Data
 Navigate to `http://localhost:3000`. Grafana will bypass manual setup via YAML provisioning and instantly render the live data flowing through the pipeline.
 
+![Grafana Dashboard](docs/grafana.png)
+
 ## Engineering Challenges & Solutions
 
 Building a distributed architecture comprising multiple interdependent nodes introduced severe hardware constraints. This project highlights deep system-level optimization:
@@ -103,6 +113,9 @@ Building a distributed architecture comprising multiple interdependent nodes int
 * **Preventing Linux Swap Thrashing & OOM Kills:** 
   * *Challenge:* Running Spark and Kafka locally caused the Java Virtual Machine(JVM) to hoard host RAM, resulting in catastrophic Out-Of-Memory system freezes.
   * *Solution:* Implemented strict `--driver-memory` and `--executor-memory` caps in the Spark submitter, heavily throttled Kafka's `maxOffsetsPerTrigger`, and reduced default Spark SQL shuffle partitions from 200 to 4. This contained the JVM garbage collection cycle and stabilized the host machine CPU/RAM footprint.
+
+![Checkpoint Recovery](docs/fault_tolerance.png)
+
 * **Database Transaction Lock Mitigation:** 
   * *Challenge:* Attempting to bulk-insert 1.86 million rows of nested string arrays (Order Books) into PostgreSQL caused the database to lock and enter recovery mode.
   * *Solution:* Re-engineered the Pandas extraction layer to utilize sequential `chunksize` database inserts, discarding memory-heavy `method='multi'` arguments for large payloads to ensure safe, continuous database streaming.
