@@ -115,6 +115,9 @@ Building a distributed architecture comprising multiple interdependent nodes int
 * **Dependency Race Condition Resolution:**
   * *Challenge:* A blanket `docker compose up -d` caused Kafka to crash into an exponential backoff loop because ZooKeeper's JVM had not finished initializing its transaction logs.
   * *Solution:* Enforced a strict, 5-stage sequential boot process, ensuring the storage/coordination layer (ZooKeeper, Postgres) binds to ports before the messaging layer (Kafka) boots, preventing startup network isolation.
+* **Complex Avro Schema Deserialization:**
+  * *Challenge:* Debezium serializes CDC events into highly nested, binary Avro format in Kafka. Dynamically unpacking these complex payloads in PySpark requires strict schema enforcement and integration with the Confluent Schema Registry.
+  * *Solution:* Engineered custom PySpark schema definitions (`spark_schema.py`) to natively parse and extract the `after` block from the Debezium `Envelope`. This allowed Spark to accurately cast the binary byte streams back into structured DataFrames for downstream aggregation.
 
 ## Next Steps
 
