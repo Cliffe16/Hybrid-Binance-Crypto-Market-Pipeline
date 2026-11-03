@@ -29,7 +29,7 @@ services:
     ports:
       - "2181:2181"
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      test: ["CMD-SHELL", "cub zk-ready localhost:2181 5"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -148,6 +148,7 @@ services:
 
   spark-master:
     image: bitnamilegacy/spark:3.4
+    user: root
     container_name: spark_master
     environment:
       - SPARK_MODE=master
@@ -165,6 +166,7 @@ services:
 
   spark-worker:
     image: bitnamilegacy/spark:3.4
+    user: root
     container_name: spark_worker
     environment:
       - SPARK_MODE=worker
@@ -185,6 +187,8 @@ services:
 
   spark-submitter:
     image: bitnamilegacy/spark:3.4
+    user: root
+    restart: on-failure
     container_name: spark_submitter
     volumes:
       - ./:/app
