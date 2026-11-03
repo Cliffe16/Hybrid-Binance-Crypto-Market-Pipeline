@@ -101,7 +101,7 @@ clean_pairs = raw_pairs \
 
 
 # Execute the streams 
-query_candles = candlestick_df.writeStream.outputMode("append") \
+query_candles = candlestick_df.writeStream.outputMode("update") \
     .format("org.apache.spark.sql.cassandra") \
     .option("keyspace", "binance") \
     .option("table", "candlestick") \
@@ -109,6 +109,7 @@ query_candles = candlestick_df.writeStream.outputMode("append") \
     .option("spark.cassandra.connection.port", "9042") \
     .option("checkpointLocation", "/tmp/checkpoints/candlestick") \
     .option("spark.cassandra.connection.timeoutMS", "60000") \
+    .option("spark.cassandra.output.ttl", "86400") \
     .trigger(processingTime="30 seconds") \
     .start()
 
@@ -120,6 +121,7 @@ query_orders = clean_orders.writeStream.outputMode("append") \
     .option("spark.cassandra.connection.port", "9042") \
     .option("checkpointLocation", "/tmp/checkpoints/order_books") \
     .option("spark.cassandra.connection.timeoutMS", "60000") \
+	.option("spark.cassandra.output.ttl", "86400") \
     .trigger(processingTime="30 seconds") \
     .start()
 
@@ -132,6 +134,7 @@ query_tickers = clean_tickers.writeStream.outputMode("append") \
     .option("spark.cassandra.connection.port", "9042") \
     .option("checkpointLocation", "/tmp/checkpoints/tickers") \
     .option("spark.cassandra.connection.timeoutMS", "60000") \
+    .option("spark.cassandra.output.ttl", "86400") \
     .trigger(processingTime="30 seconds") \
     .start()
 
