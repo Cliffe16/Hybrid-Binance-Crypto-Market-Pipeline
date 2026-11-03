@@ -12,7 +12,7 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-binance} -d $${POSTGRES_DB:-binance}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -28,6 +28,11 @@ services:
       KAFKA_JVM_PERFORMANCE_OPTS: "-Xms128m -Xmx256m"
     ports:
       - "2181:2181"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - streaming_net
     volumes:
@@ -38,7 +43,8 @@ services:
     image: confluentinc/cp-kafka:7.4.0
     container_name: kafka
     depends_on:
-      - zookeeper
+      - zookeeper:
+          condition: service_healthy
     ports:
       - "${KAFKA_PORT:-9092}:9092"
     volumes:
