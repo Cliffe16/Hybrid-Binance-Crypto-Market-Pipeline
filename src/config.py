@@ -1,5 +1,6 @@
 import os
 from dotenv import load_dotenv
+from urllib.parse import quote_plus
 
 load_dotenv()
 
@@ -24,6 +25,10 @@ POSTGRES_CONNECTION = {
     "database": POSTGRES_DB,
     "port": POSTGRES_PORT
     }
+
+# Encode credentials 
+encoded_user = quote_plus(POSTGRES_USER) if POSTGRES_USER else ""
+encoded_pass = quote_plus(POSTGRES_PASS) if POSTGRES_PASS else ""
 
 POSTGRES_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASS}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 
