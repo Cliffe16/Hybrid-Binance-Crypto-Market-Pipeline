@@ -85,7 +85,10 @@ clean_tickers = raw_tickers \
     .filter(col("symbol").isNotNull() & (trim(col("symbol")) != "")) \
     .select(
         col("symbol"),
-        col("price").alias("last_price")
+        col("priceChange").alias("price_change"),
+        col("priceChangePercent").alias("price_change_percent"),
+        col("price").alias("last_price"),
+        col("volume")
     )
 
 clean_pairs = raw_pairs \
