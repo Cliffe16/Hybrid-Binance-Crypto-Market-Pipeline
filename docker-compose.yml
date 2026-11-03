@@ -171,6 +171,7 @@ services:
       - SPARK_SSL_ENABLED=no
     volumes:
       - ./:/app
+      - spark_checkpoints:/tmp/checkpoints
     depends_on:
       - spark-master
     networks:
@@ -182,6 +183,7 @@ services:
     volumes:
       - ./:/app
       - ./spark_cache:/opt/bitnami/spark/.ivy2
+      - spark_checkpoints:/tmp/checkpoints
     environment:
       - PYTHONPATH=/app
     command: >
@@ -362,3 +364,4 @@ volumes:
   kafka_data:
   zookeeper_data: 
   zookeeper_log:
+  spark_checkpoints:
