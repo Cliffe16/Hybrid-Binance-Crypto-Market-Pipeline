@@ -15,9 +15,11 @@ CREATE TABLE IF NOT EXISTS candlestick (
 
 CREATE TABLE IF NOT EXISTS order_books (
     symbol text,
-    lastupdateid bigint,0
-    bids text,
-    asks text,
+    lastupdateid bigint,
+    bid_price text,
+    bid_qty text,
+    ask_price text,
+    ask_qty text,
     PRIMARY KEY (symbol, lastupdateid)
 );
 
