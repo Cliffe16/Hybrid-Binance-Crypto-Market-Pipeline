@@ -1,5 +1,5 @@
 from airflow.sdk import dag, task
-from airflow.providers.http.sensors.http import HttpSensor
+from airflow.operators.bash import BashOperator
 from datetime import datetime, timedelta
 from src.extraction.extract import extract
 from src.ingestion.load import load
@@ -22,15 +22,20 @@ default_args = {
 
 def binance_batch_pipeline():
     # Wait for Debezium connector to be active
-    wait_for_cdc = HttpSensor(
+    wait_for_cdc = BashOperator(
         task_id='wait_for_debezium',
-        http_conn_id='kafka_connect', 
-        endpoint='connectors/binance-postgres-connector/status',
-        method='GET',
-        response_check=lambda response: "RUNNING" in response.text,
-        poke_interval=10,
-        timeout=300
-    )
+        bash_command='''
+            retries=0
+            until curl -s -f http://debezium:8083/connectors/binance-postgres-connector/status | grep -q '"state":"RUNNING"'; do
+                if [ $$retries -ge 30 ]; then 
+                    echo "Debezium failed to start after 5 minutes. Failing task." >&2; 
+                    exit 1; 
+                fi
+                echo "Waiting for Debezium connector to initialize...";
+                sleep 10;
+                retries=$$((retries+1))
+            done
+        '''
 
     @task(task_id='binance_pipeline')
     def main():
