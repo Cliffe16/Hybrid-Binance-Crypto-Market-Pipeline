@@ -188,7 +188,7 @@ services:
   spark-submitter:
     image: bitnamilegacy/spark:3.4
     user: root
-    restart: on-failure
+    restart: on-failure:5
     container_name: spark_submitter
     volumes:
       - ./:/app
