@@ -43,8 +43,8 @@ services:
     image: confluentinc/cp-kafka:7.4.0
     container_name: kafka
     depends_on:
-      - zookeeper:
-          condition: service_healthy
+      zookeeper:
+        condition: service_healthy
     ports:
       - "${KAFKA_PORT:-9092}:9092"
     volumes:
