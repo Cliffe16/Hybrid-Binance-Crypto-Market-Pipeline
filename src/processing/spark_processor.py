@@ -1,156 +1,160 @@
-import requests
+import os
 import time
-from src.utils.spark_utils import spark_session
-from pyspark.sql.functions import *
+
+import pyspark.sql.functions as F
+import requests
 from pyspark.sql.avro.functions import from_avro
+
 from src.utils.kafka_utils import read_kafka_topic
+from src.utils.spark_utils import spark_session
+
+SCHEMA_REGISTRY_URL = os.getenv("SCHEMA_REGISTRY_URL", "http://schema-registry:8081")
+CASSANDRA_HOST = os.getenv("CASSANDRA_HOST", "cassandra")
+CASSANDRA_PORT = os.getenv("CASSANDRA_PORT", "9042")
+CHECKPOINT_DIR = os.getenv("CHECKPOINT_DIR", "/tmp/checkpoints")
+KEYSPACE = "binance"
+TOPIC_PREFIX = "binance_server.public"
 
 spark = spark_session()
 
-# Optimize memory footprint for java runtime
-spark.conf.set("spark.sql.shuffle.partitions", "4") # Drop from 200 to 4
-spark.conf.set("spark.streaming.stopGracefullyOnShutdown", "true")
-spark.conf.set("spark.sql.streaming.minBatchesToRetain", "2") # Don't hold old batch metadata in RAM
+# Optimize memory footprint for the Java runtime
+spark.conf.set("spark.sql.shuffle.partitions", "4")  # Drop from 200 to 4
+spark.conf.set("spark.sql.streaming.minBatchesToRetain", "2")  # Don't hold old batch metadata in RAM
 
-# Increased retries to 100 to prevent cold-start crashes while Debezium initializes
-def fetch_schema(topic_name, retries=100):
-    """Fetches the latest Avro schema from the Confluent Schema Registry."""
-    url = f"http://schema-registry:8081/subjects/{topic_name}-value/versions/latest"
 
-    for _try in range(retries):
+def fetch_schema(topic_name, retries=20):
+    """Fetch the latest Avro value schema from the Confluent Schema Registry."""
+    url = f"{SCHEMA_REGISTRY_URL}/subjects/{topic_name}-value/versions/latest"
+
+    for attempt in range(1, retries + 1):
         try:
-            response = requests.get(url)
+            response = requests.get(url, timeout=5)
             response.raise_for_status()
             return response.json()["schema"]
-        except:
-            print(f"Schema Registry not ready. Retrying in 5 seconds... (Attempt {_try+1}/{retries})")
+        except (requests.RequestException, KeyError, ValueError) as exc:
+            print(f"Schema Registry not ready ({exc}). Retrying in 5 seconds... (Attempt {attempt}/{retries})")
             time.sleep(5)
 
-    raise Exception(f"Fatal: Could not connect to Schema Registry for {topic_name} after {retries} attempts.")
+    raise RuntimeError(f"Could not fetch schema for {topic_name} after {retries} attempts.")
 
-candlestick_schema = fetch_schema("binance_server.public.candlestick_data")
-orders_schema = fetch_schema("binance_server.public.order_books")
-tickers_schema = fetch_schema("binance_server.public.tickers")
-pairs_schema = fetch_schema("binance_server.public.trading_pairs")
 
-# Ingest the kafka streams
-raw_candlestick = read_kafka_topic("binance_server.public.candlestick_data")
-raw_orders = read_kafka_topic("binance_server.public.order_books")
-raw_tickers = read_kafka_topic("binance_server.public.tickers")
-raw_pairs = read_kafka_topic("binance_server.public.trading_pairs")
+def decode(raw_df, schema):
+    """Strip the 5-byte Schema Registry header, decode Avro and unwrap Debezium's `after` block."""
+    payload = F.expr("substring(value, 6, length(value) - 5)")
+    return (
+        raw_df
+        .withColumn("avro_data", from_avro(payload, schema))
+        .select("avro_data.after.*")
+        .filter(F.col("symbol").isNotNull() & (F.trim(F.col("symbol")) != ""))
+    )
 
-# Slice off the 5-byte Confluent Schema Registry header
-clean_avro_bytes = expr("substring(value, 6, length(value)-5)")
 
-# Removed watermark and windowing. Mapped raw data directly to Cassandra schema columns.
-enriched_candlestick = raw_candlestick \
-    .withColumn("avro_data", from_avro(clean_avro_bytes, candlestick_schema)) \
-    .select("avro_data.after.*") \
-    .filter(col("symbol").isNotNull() & (trim(col("symbol")) != "")) \
-    .withColumn("price", col("close").cast("float")) \
-    .withColumn("price_high", col("high").cast("float")) \
-    .withColumn("price_low", col("low").cast("float")) \
-    .withColumn("trade_volume", col("volume").cast("float")) \
-    .withColumn("window_start", to_timestamp(col("open_time") / 1000)) \
-    .withColumn("avg_minute_price", col("price")) \
-    .withColumn("total_volume_min", col("trade_volume")) \
-    .withColumn("price_stddev", lit(0.0)) \
-    .withColumn("max_spread", col("price_high") - col("price_low"))
+def top_of_book(column, index):
+    """Best level of a bids/asks array stored as a Postgres-style string: index 0 = price, 1 = quantity."""
+    return F.get_json_object(F.translate(F.col(column), "{}", "[]"), f"$[0][{index}]")
 
-candlestick_df = enriched_candlestick.select(
-    "symbol", 
-    "window_start", 
-    "avg_minute_price", 
-    "total_volume_min", 
-    "price_stddev", 
-    "max_spread"
+
+def write_to_cassandra(df, table):
+    return (
+        df.writeStream.outputMode("append")
+        .format("org.apache.spark.sql.cassandra")
+        .option("keyspace", KEYSPACE)
+        .option("table", table)
+        .option("spark.cassandra.connection.host", CASSANDRA_HOST)
+        .option("spark.cassandra.connection.port", CASSANDRA_PORT)
+        .option("spark.cassandra.connection.timeoutMS", "60000")
+        .option("checkpointLocation", f"{CHECKPOINT_DIR}/{table}")
+        .trigger(processingTime="30 seconds")
+        .start()
+    )
+
+
+def upsert_to_cassandra(df, table):
+    """Emit every window that changed in each trigger (update mode) and upsert it by primary key.
+
+    Uses foreachBatch with a plain batch write, so the same (symbol, window_start) row is simply
+    overwritten as its window is updated, and a replayed batch is harmless.
+    """
+
+    def _write(batch_df, batch_id):
+        (
+            batch_df.write.format("org.apache.spark.sql.cassandra")
+            .mode("append")
+            .option("keyspace", KEYSPACE)
+            .option("table", table)
+            .option("spark.cassandra.connection.host", CASSANDRA_HOST)
+            .option("spark.cassandra.connection.port", CASSANDRA_PORT)
+            .option("spark.cassandra.connection.timeoutMS", "60000")
+            .save()
+        )
+
+    return (
+        df.writeStream.outputMode("update")
+        .foreachBatch(_write)
+        .option("checkpointLocation", f"{CHECKPOINT_DIR}/{table}")
+        .trigger(processingTime="30 seconds")
+        .start()
+    )
+
+
+# Fetch schemas
+candlestick_schema = fetch_schema(f"{TOPIC_PREFIX}.candlestick_data")
+orders_schema = fetch_schema(f"{TOPIC_PREFIX}.order_books")
+tickers_schema = fetch_schema(f"{TOPIC_PREFIX}.tickers")
+pairs_schema = fetch_schema(f"{TOPIC_PREFIX}.trading_pairs")
+
+# Ingest the Kafka streams
+raw_candlestick = read_kafka_topic(f"{TOPIC_PREFIX}.candlestick_data")
+raw_orders = read_kafka_topic(f"{TOPIC_PREFIX}.order_books")
+raw_tickers = read_kafka_topic(f"{TOPIC_PREFIX}.tickers")
+raw_pairs = read_kafka_topic(f"{TOPIC_PREFIX}.trading_pairs")
+
+# Candlesticks: 1-minute windowed aggregates
+candlestick_df = (
+    decode(raw_candlestick, candlestick_schema)
+    .withColumn("price", F.col("close").cast("float"))
+    .withColumn("price_high", F.col("high").cast("float"))
+    .withColumn("price_low", F.col("low").cast("float"))
+    .withColumn("trade_volume", F.col("volume").cast("float"))
+    .withColumn("timestamp", F.to_timestamp(F.col("open_time") / 1000))
+    .withWatermark("timestamp", "2 minutes")
+    .groupBy(F.window(F.col("timestamp"), "1 minute"), F.col("symbol"))
+    .agg(
+        F.avg("price").alias("avg_minute_price"),
+        F.sum("trade_volume").alias("total_volume_min"),
+        F.coalesce(F.stddev("price"), F.lit(0.0)).alias("price_stddev"),
+        (F.max("price_high") - F.min("price_low")).alias("max_spread"),
+    )
+    .withColumn("window_start", F.col("window.start"))
+    .drop("window")
 )
 
-clean_orders = raw_orders \
-    .withColumn("avro_data", from_avro(clean_avro_bytes, orders_schema)) \
-    .select("avro_data.after.*") \
-    .filter(col("symbol").isNotNull() & (trim(col("symbol")) != "")) \
-    .withColumnRenamed("lastUpdateId", "lastupdateid") \
-    .select(
-        col("symbol"),
-        col("lastUpdateId").alias("lastupdateid"),
-        get_json_object(translate(col("bids"), "{}", "[]"),  "$[0][1]").alias("bid_price"),
-        get_json_object(translate(col("bids"), "{}", "[]"),  "$[0][1]").alias("bid_qty"),
-        get_json_object(translate(col("asks"), "{}", "[]"),  "$[0][1]").alias("ask_price"),
-        get_json_object(translate(col("asks"), "{}", "[]"),  "$[0][1]").alias("ask_qty")
-    )
+# Price and quantity of the top level
+clean_orders = decode(raw_orders, orders_schema).select(
+    F.col("symbol"),
+    F.col("lastUpdateId").alias("lastupdateid"),
+    top_of_book("bids", 0).alias("bid_price"),
+    top_of_book("bids", 1).alias("bid_qty"),
+    top_of_book("asks", 0).alias("ask_price"),
+    top_of_book("asks", 1).alias("ask_qty"),
+)
 
-clean_tickers = raw_tickers \
-    .withColumn("avro_data", from_avro(clean_avro_bytes, tickers_schema)) \
-    .select("avro_data.after.*") \
-    .filter(col("symbol").isNotNull() & (trim(col("symbol")) != "")) \
-    .select(
-        col("symbol"),
-        col("priceChange").alias("price_change"),
-        col("priceChangePercent").alias("price_change_percent"),
-        col("price").alias("last_price"),
-        col("volume")
-    )
+clean_tickers = decode(raw_tickers, tickers_schema).select(
+    F.col("symbol"),
+    F.col("price").alias("last_price"),
+)
 
-clean_pairs = raw_pairs \
-    .withColumn("avro_data", from_avro(clean_avro_bytes, pairs_schema)) \
-    .select("avro_data.after.*") \
-    .filter(col("symbol").isNotNull() & (trim(col("symbol")) != "")) \
-    .select(
-        col("symbol"),
-        col("baseAsset").alias("base_asset"),
-        col("quoteAsset").alias("quote_asset"),
-        col("status")
-    )
+clean_pairs = decode(raw_pairs, pairs_schema).select(
+    F.col("symbol"),
+    F.col("baseAsset").alias("base_asset"),
+    F.col("quoteAsset").alias("quote_asset"),
+    F.col("status"),
+)
 
-
-# Execute the streams 
-query_candles = candlestick_df.writeStream.outputMode("append") \
-    .format("org.apache.spark.sql.cassandra") \
-    .option("keyspace", "binance") \
-    .option("table", "candlestick") \
-    .option("spark.cassandra.connection.host", "cassandra") \
-    .option("spark.cassandra.connection.port", "9042") \
-    .option("checkpointLocation", "/tmp/checkpoints/candlestick") \
-    .option("spark.cassandra.connection.timeoutMS", "60000") \
-    .option("spark.cassandra.output.ttl", "172800") \
-    .trigger(processingTime="30 seconds") \
-    .start()
-
-query_orders = clean_orders.writeStream.outputMode("append") \
-    .format("org.apache.spark.sql.cassandra") \
-    .option("keyspace", "binance") \
-    .option("table", "order_books") \
-    .option("spark.cassandra.connection.host", "cassandra") \
-    .option("spark.cassandra.connection.port", "9042") \
-    .option("checkpointLocation", "/tmp/checkpoints/order_books") \
-    .option("spark.cassandra.connection.timeoutMS", "60000") \
-	.option("spark.cassandra.output.ttl", "172800") \
-    .trigger(processingTime="30 seconds") \
-    .start()
-
-
-query_tickers = clean_tickers.writeStream.outputMode("append") \
-    .format("org.apache.spark.sql.cassandra") \
-    .option("keyspace", "binance") \
-    .option("table", "tickers") \
-    .option("spark.cassandra.connection.host", "cassandra") \
-    .option("spark.cassandra.connection.port", "9042") \
-    .option("checkpointLocation", "/tmp/checkpoints/tickers") \
-    .option("spark.cassandra.connection.timeoutMS", "60000") \
-    .option("spark.cassandra.output.ttl", "172800") \
-    .trigger(processingTime="30 seconds") \
-    .start()
-
-query_pairs = clean_pairs.writeStream.outputMode("append") \
-    .format("org.apache.spark.sql.cassandra") \
-    .option("keyspace", "binance") \
-    .option("table", "trading_pairs") \
-    .option("spark.cassandra.connection.host", "cassandra") \
-    .option("spark.cassandra.connection.port", "9042") \
-    .option("checkpointLocation", "/tmp/checkpoints/trading_pairs") \
-    .option("spark.cassandra.connection.timeoutMS", "60000") \
-    .trigger(processingTime="30 seconds") \
-    .start()
+# Execute the streams
+upsert_to_cassandra(candlestick_df, "candlestick")
+write_to_cassandra(clean_orders, "order_books")
+write_to_cassandra(clean_tickers, "tickers")
+write_to_cassandra(clean_pairs, "trading_pairs")
 
 spark.streams.awaitAnyTermination()
