@@ -36,7 +36,7 @@ def binance_batch_pipeline():
                 retries=$$((retries+1))
             done
         '''
-
+        )
     @task(task_id='binance_pipeline')
     def main():
         load()
