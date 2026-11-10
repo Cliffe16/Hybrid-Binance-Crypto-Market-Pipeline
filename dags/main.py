@@ -27,13 +27,13 @@ def binance_batch_pipeline():
         bash_command='''
             retries=0
             until curl -s -f http://debezium:8083/connectors/binance-postgres-connector/status | grep -q '"state":"RUNNING"'; do
-                if [ $$retries -ge 30 ]; then 
+                if [ $retries -ge 30 ]; then 
                     echo "Debezium failed to start after 5 minutes. Failing task." >&2; 
                     exit 1; 
                 fi
                 echo "Waiting for Debezium connector to initialize...";
                 sleep 10;
-                retries=$$((retries+1))
+                retries=$((retries+1))
             done
         '''
         )
