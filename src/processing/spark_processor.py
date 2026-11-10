@@ -1,10 +1,8 @@
 import os
 import time
-
 import pyspark.sql.functions as F
 import requests
 from pyspark.sql.avro.functions import from_avro
-
 from src.utils.kafka_utils import read_kafka_topic
 from src.utils.spark_utils import spark_session
 

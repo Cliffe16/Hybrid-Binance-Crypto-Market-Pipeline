@@ -1,4 +1,5 @@
 from src.utils.spark_utils import spark_session
+import os
 
 spark = spark_session()
 
