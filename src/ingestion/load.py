@@ -1,12 +1,70 @@
-from sqlalchemy import create_engine, exc
-import psycopg2
-from src import config
-from src.extraction import extract
-import pandas as pd
 import json
 
+import pandas as pd
+from sqlalchemy import create_engine, exc, or_, text
+from sqlalchemy.dialects.postgresql import insert
+
+from src import config
+from src.extraction import extract
+
+
+def make_insert_method(key_cols, update=True):
+    """Build a pandas `to_sql` method that upserts on `key_cols` instead of blindly appending.
+
+    update=True  : existing rows are overwritten, but only when a value actually changed
+                   (so re-running the load with identical data produces no CDC events).
+    update=False : existing rows are left untouched.
+    """
+
+    def _method(table, conn, keys, data_iter):
+        rows = [dict(zip(keys, row)) for row in data_iter]
+        if not rows:
+            return
+        stmt = insert(table.table).values(rows)
+        value_cols = [c for c in keys if c not in key_cols]
+        if update and value_cols:
+            stmt = stmt.on_conflict_do_update(
+                index_elements=key_cols,
+                set_={c: stmt.excluded[c] for c in value_cols},
+                where=or_(*[table.table.c[c].is_distinct_from(stmt.excluded[c]) for c in value_cols]),
+            )
+        else:
+            stmt = stmt.on_conflict_do_nothing(index_elements=key_cols)
+        conn.execute(stmt)
+
+    return _method
+
+
+def ensure_table(engine, name, df, key_cols):
+    """Create the table if needed and make sure it has a primary key on `key_cols`.
+
+    Tables created by the old append-only loader have no key and may hold duplicates. For those,
+    duplicates are removed once and the key is added. REPLICA IDENTITY FULL is set temporarily
+    because Debezium's publication would otherwise reject the DELETE on a table without a key.
+    """
+    missing = [c for c in key_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"{name}: key columns {missing} not found in the extracted data")
+
+    df.head(0).to_sql(name, con=engine, if_exists="append", index=False)  # create if absent
+
+    quoted_keys = ", ".join(f'"{c}"' for c in key_cols)
+    same_key = " AND ".join(f'a."{c}" = b."{c}"' for c in key_cols)
+    with engine.begin() as conn:
+        has_pk = conn.execute(
+            text("SELECT 1 FROM pg_index WHERE indrelid = CAST(:t AS regclass) AND indisprimary"),
+            {"t": name},
+        ).first()
+        if has_pk:
+            return
+        conn.execute(text(f'ALTER TABLE "{name}" REPLICA IDENTITY FULL'))
+        conn.execute(text(f'DELETE FROM "{name}" a USING "{name}" b WHERE a.ctid < b.ctid AND {same_key}'))
+        conn.execute(text(f'ALTER TABLE "{name}" ADD PRIMARY KEY ({quoted_keys})'))
+        conn.execute(text(f'ALTER TABLE "{name}" REPLICA IDENTITY DEFAULT'))
+
+
 def load():
-    """Load the raw data into Postgres"""
+    """Load the raw data into Postgres (idempotent: re-running does not create duplicates)"""
     market_data = extract.extract()
     try:
         # Convert the dictionaries to  dataframes
@@ -25,7 +83,7 @@ def load():
             if col in trading_pairs_df.columns:
                 trading_pairs_df[col] = trading_pairs_df[col].apply(lambda x: json.dumps(x) if isinstance(x, (list, dict)) else x) #convert the columns to strings if lisst or dict
 
-        # For the othe dictionaries, iterate through the symbols (top-level key) 
+        # For the othe dictionaries, iterate through the symbols (top-level key)
         # Create empty lists to store the data after each iteration
         ob_list = []
         ohlc_list = []
@@ -55,27 +113,36 @@ def load():
                 temp_df["symbol"] = symbol
                 ohlc_list.append(temp_df)
 
-        # Combine the nested dfs from the for loop 
+        # Combine the nested dfs from the for loop
         order_book_df = pd.DataFrame(ob_list)
 
         if ohlc_list:
             candlestick_df = pd.concat(ohlc_list, ignore_index=True)
         else:
             candlestick_df = pd.DataFrame()
-        
+
         # Define sqlalchemy engine
         engine = create_engine(config.POSTGRES_URL)
-        ticker_df.to_sql("tickers", con=engine, if_exists="append", index=False, chunksize=500, method='multi')
-        print(f"Tickers\n Rows: {len(ticker_df)} loaded")
 
-        trading_pairs_df.to_sql("trading_pairs", con=engine, if_exists="append", index=False, chunksize=500, method='multi')
-        print(f"Trading Pairs\n Rows: {len(trading_pairs_df)} loaded")
-        
-        order_book_df.to_sql("order_books", con=engine, if_exists="append", index=False, chunksize=100)
-        print(f"Order Books\n Rows: {len(order_book_df)} loaded")
+        # (table, dataframe, key columns, overwrite changed rows?, rows per insert)
+        loads = [
+            ("tickers", ticker_df, ["symbol"], True, 500),
+            ("trading_pairs", trading_pairs_df, ["symbol"], True, 200),
+            ("order_books", order_book_df, ["symbol", "lastUpdateId"], False, 25),
+            ("candlestick_data", candlestick_df, ["symbol", "open_time"], True, 500),
+        ]
 
-        candlestick_df.to_sql("candlestick_data", con=engine, if_exists="append", index=False, chunksize=1000)
-        print(f"OHLC Data\n Rows: {len(candlestick_df)} loaded")
+        for name, df, key_cols, update, chunk in loads:
+            if df.empty:
+                print(f"{name}\n No rows to load")
+                continue
+            df = df.drop_duplicates(subset=key_cols, keep="last")
+            ensure_table(engine, name, df, key_cols)
+            df.to_sql(
+                name, con=engine, if_exists="append", index=False,
+                chunksize=chunk, method=make_insert_method(key_cols, update),
+            )
+            print(f"{name}\n Rows: {len(df)} processed")
 
     except exc.IntegrityError as e:
         print(f"Data Constraint Error: {e}")
@@ -91,4 +158,3 @@ def load():
         raise
     else:
         print("Data Loaded Successfully")
-        
