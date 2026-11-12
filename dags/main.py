@@ -1,7 +1,6 @@
 from airflow.sdk import dag, task
-from airflow.operators.bash import BashOperator
+from airflow.providers.standard.operators.bash import BashOperator
 from datetime import datetime, timedelta
-from src.extraction.extract import extract
 from src.ingestion.load import load
 
 default_args = {
