@@ -12,6 +12,7 @@ CASSANDRA_PORT = os.getenv("CASSANDRA_PORT", "9042")
 CHECKPOINT_DIR = os.getenv("CHECKPOINT_DIR", "/tmp/checkpoints")
 KEYSPACE = "binance"
 TOPIC_PREFIX = "binance_server.public"
+TTL_SECONDS = "172800"  # 48 hours: a buffer over the daily Airflow schedule
 
 spark = spark_session()
 
@@ -20,8 +21,12 @@ spark.conf.set("spark.sql.shuffle.partitions", "4")  # Drop from 200 to 4
 spark.conf.set("spark.sql.streaming.minBatchesToRetain", "2")  # Don't hold old batch metadata in RAM
 
 
-def fetch_schema(topic_name, retries=20):
-    """Fetch the latest Avro value schema from the Confluent Schema Registry."""
+def fetch_schema(topic_name, retries=100):
+    """Fetch the latest Avro value schema from the Confluent Schema Registry.
+
+    Subjects only exist once Debezium has emitted events for a table, so this waits
+    (up to retries * 5s) to survive a cold start.
+    """
     url = f"{SCHEMA_REGISTRY_URL}/subjects/{topic_name}-value/versions/latest"
 
     for attempt in range(1, retries + 1):
@@ -52,8 +57,8 @@ def top_of_book(column, index):
     return F.get_json_object(F.translate(F.col(column), "{}", "[]"), f"$[0][{index}]")
 
 
-def write_to_cassandra(df, table):
-    return (
+def write_to_cassandra(df, table, ttl=None):
+    writer = (
         df.writeStream.outputMode("append")
         .format("org.apache.spark.sql.cassandra")
         .option("keyspace", KEYSPACE)
@@ -61,38 +66,16 @@ def write_to_cassandra(df, table):
         .option("spark.cassandra.connection.host", CASSANDRA_HOST)
         .option("spark.cassandra.connection.port", CASSANDRA_PORT)
         .option("spark.cassandra.connection.timeoutMS", "60000")
+        .option("spark.cassandra.read.timeoutMS", "60000")
+        .option("spark.cassandra.output.concurrent.writes", "1")
+        .option("spark.cassandra.output.batch.size.rows", "64")
+        .option("spark.cassandra.output.throughputMBPerSec", "1")
         .option("checkpointLocation", f"{CHECKPOINT_DIR}/{table}")
         .trigger(processingTime="30 seconds")
-        .start()
     )
-
-
-def upsert_to_cassandra(df, table):
-    """Emit every window that changed in each trigger (update mode) and upsert it by primary key.
-
-    Uses foreachBatch with a plain batch write, so the same (symbol, window_start) row is simply
-    overwritten as its window is updated, and a replayed batch is harmless.
-    """
-
-    def _write(batch_df, batch_id):
-        (
-            batch_df.write.format("org.apache.spark.sql.cassandra")
-            .mode("append")
-            .option("keyspace", KEYSPACE)
-            .option("table", table)
-            .option("spark.cassandra.connection.host", CASSANDRA_HOST)
-            .option("spark.cassandra.connection.port", CASSANDRA_PORT)
-            .option("spark.cassandra.connection.timeoutMS", "60000")
-            .save()
-        )
-
-    return (
-        df.writeStream.outputMode("update")
-        .foreachBatch(_write)
-        .option("checkpointLocation", f"{CHECKPOINT_DIR}/{table}")
-        .trigger(processingTime="30 seconds")
-        .start()
-    )
+    if ttl:
+        writer = writer.option("spark.cassandra.output.ttl", ttl)
+    return writer.start()
 
 
 # Fetch schemas
@@ -107,27 +90,25 @@ raw_orders = read_kafka_topic(f"{TOPIC_PREFIX}.order_books")
 raw_tickers = read_kafka_topic(f"{TOPIC_PREFIX}.tickers")
 raw_pairs = read_kafka_topic(f"{TOPIC_PREFIX}.trading_pairs")
 
-# Candlesticks: 1-minute windowed aggregates
+# Candlesticks: Binance already returns 1-minute candles, so no windowing or watermark.
+# Rows are upserted by (symbol, window_start)
 candlestick_df = (
     decode(raw_candlestick, candlestick_schema)
-    .withColumn("price", F.col("close").cast("float"))
+    .withColumn("price", F.col("close").cast("double"))
     .withColumn("price_high", F.col("high").cast("float"))
     .withColumn("price_low", F.col("low").cast("float"))
-    .withColumn("trade_volume", F.col("volume").cast("float"))
-    .withColumn("timestamp", F.to_timestamp(F.col("open_time") / 1000))
-    .withWatermark("timestamp", "2 minutes")
-    .groupBy(F.window(F.col("timestamp"), "1 minute"), F.col("symbol"))
-    .agg(
-        F.avg("price").alias("avg_minute_price"),
-        F.sum("trade_volume").alias("total_volume_min"),
-        F.coalesce(F.stddev("price"), F.lit(0.0)).alias("price_stddev"),
-        (F.max("price_high") - F.min("price_low")).alias("max_spread"),
+    .withColumn("window_start", F.to_timestamp(F.col("open_time") / 1000))
+    .select(
+        "symbol",
+        "window_start",
+        F.col("price").alias("avg_minute_price"),  # one candle per minute: the close price
+        F.col("volume").cast("double").alias("total_volume_min"),
+        F.lit(0.0).alias("price_stddev"),  # a single candle has no spread of prices
+        (F.col("price_high") - F.col("price_low")).alias("max_spread"),
     )
-    .withColumn("window_start", F.col("window.start"))
-    .drop("window")
 )
 
-# Price and quantity of the top level
+# Order books contains best bid/ask only
 clean_orders = decode(raw_orders, orders_schema).select(
     F.col("symbol"),
     F.col("lastUpdateId").alias("lastupdateid"),
@@ -149,10 +130,10 @@ clean_pairs = decode(raw_pairs, pairs_schema).select(
     F.col("status"),
 )
 
-# Execute the streams
-upsert_to_cassandra(candlestick_df, "candlestick")
-write_to_cassandra(clean_orders, "order_books")
-write_to_cassandra(clean_tickers, "tickers")
+# Execute the streams (high-churn tables expire after 48 hours)
+write_to_cassandra(candlestick_df, "candlestick", ttl=TTL_SECONDS)
+write_to_cassandra(clean_orders, "order_books", ttl=TTL_SECONDS)
+write_to_cassandra(clean_tickers, "tickers", ttl=TTL_SECONDS)
 write_to_cassandra(clean_pairs, "trading_pairs")
 
 spark.streams.awaitAnyTermination()
