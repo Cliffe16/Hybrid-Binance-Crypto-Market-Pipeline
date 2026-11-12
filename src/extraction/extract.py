@@ -1,67 +1,100 @@
-from src import config
+import os
 import time
+
 import requests
+
+from src import config
+
+# Binance intervals are case-sensitive: "1m" is one MINUTE, "1M" is one MONTH.
+CANDLE_INTERVAL = os.getenv("CANDLE_INTERVAL", "1m")
+CANDLE_LIMIT = int(os.getenv("CANDLE_LIMIT", "100"))  # Keep batch memory bounded
+MAX_SYMBOLS = int(os.getenv("MAX_SYMBOLS", "0"))    # Set to 0 to fetch all active pairs
+QUOTE_ASSET_FILTER = os.getenv("QUOTE_ASSET_FILTER", "USDT")  # Focus on liquid USDT pairs
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+}
+
+
+def get_json(session, url, retries=5, **kwargs):
+    """GET a URL and return its JSON, backing off on rate limits, server errors, and network timeouts."""
+    for attempt in range(retries):
+        try:
+            response = session.get(url, headers=HEADERS, timeout=10, **kwargs)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            wait = 2 ** attempt
+            print(f"Network error ({exc}) from {url}; retrying in {wait}s ({attempt + 1}/{retries})", flush=True)
+            time.sleep(wait)
+            continue
+
+        if response.status_code in (418, 429) or response.status_code >= 500:
+            try:
+                wait = int(response.headers.get("Retry-After", 2 ** attempt))
+            except ValueError:
+                wait = 2 ** attempt
+            print(f"HTTP {response.status_code} from {url}; retrying in {wait}s ({attempt + 1}/{retries})", flush=True)
+            time.sleep(wait)
+            continue
+
+        response.raise_for_status()
+        return response.json()
+
+    raise RuntimeError(f"Exhausted {retries} retries for {url}")
+
 
 def extract():
     """Extracts Data from Binance API endpoints"""
-    # Initalize an empty dictionary to store the extracted data
     market_data = {}
 
-    # Open a session to keep the connection alive and improve performance
     with requests.Session() as session:
         try:
-            # Store the endpoints in a dictionary to avoid overwriting data
             urls = {
                 "ticker": config.price_url,
-                "trading_pairs": config.trading_pairs_url
-                }
+                "trading_pairs": config.trading_pairs_url,
+            }
 
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-                }
-
-            # Iterate over the dictionary to extract the data
             for name, url in urls.items():
-                response = session.get(url, headers=headers, timeout=10)
-                response.raise_for_status() # raise http errors
-                market_data[name] = response.json() # store the data in the empty dictionary
+                market_data[name] = get_json(session, url)
 
-            # Get all the symbols from the price ticker data
-            symbols = [ticker['symbol'] for ticker in market_data['ticker']]
+            # Filter to actively trading symbols only (avoids 1,000+ halted 'BREAK' symbols)
+            exchange_symbols = market_data.get("trading_pairs", {}).get("symbols", [])
+            active_symbols = {
+                s["symbol"]
+                for s in exchange_symbols
+                if s.get("status") == "TRADING"
+                and (not QUOTE_ASSET_FILTER or s.get("quoteAsset") == QUOTE_ASSET_FILTER)
+            }
 
-            # Iterate over the symbols as mandatory parameters for the remaining endpoints
-            for symbol in symbols:
+            if active_symbols:
+                symbols = [t["symbol"] for t in market_data["ticker"] if t["symbol"] in active_symbols]
+            else:
+                symbols = [t["symbol"] for t in market_data["ticker"]]
+
+            if MAX_SYMBOLS > 0:
+                symbols = symbols[:MAX_SYMBOLS]
+
+            print(f"Extracting order books and candlesticks for {len(symbols)} active symbols...", flush=True)
+
+            for idx, symbol in enumerate(symbols, start=1):
                 params = {"symbol": symbol}
-                ohlc_params = {"symbol": symbol, "interval": "1M"} # interval is also mandatory for ohlc endpoint
-        
-                order_data = session.get(config.order_book_url, headers=headers, params=params, timeout=10)
-                order_data.raise_for_status()
+                ohlc_params = {"symbol": symbol, "interval": CANDLE_INTERVAL, "limit": CANDLE_LIMIT}
 
-                ohlc_data = session.get(config.ohlc_url, headers=headers, params=ohlc_params, timeout=10)
-                ohlc_data.raise_for_status()
+                order_data = get_json(session, config.order_book_url, params=params)
+                ohlc_data = get_json(session, config.ohlc_url, params=ohlc_params)
 
-                # Convert the data to json and add the data to the main dictionary with the symbol as the key
                 market_data[symbol] = {
-                    "order_book": order_data.json(),
-                    "candlestick": ohlc_data.json()
-                    }
-                
-                # Add a rate limit delay
-                time.sleep(0.2)
+                    "order_book": order_data,
+                    "candlestick": ohlc_data,
+                }
 
-        except requests.exceptions.HTTPError as e:
-            print(f"HTTP Error: {e}")
-            raise
-        except requests.exceptions.ConnectionError as e:
-            print(f"Connection Error: {e}")
-            raise
-        except requests.exceptions.Timeout as e:
-            print(f"Timeout Error: {e}")
-            raise
+                if idx % 25 == 0 or idx == len(symbols):
+                    print(f"Extracted {idx}/{len(symbols)} symbols", flush=True)
+
+                time.sleep(0.1)
+
         except Exception as e:
-            print(f"Unknown Error: {e}")
+            print(f"Extraction Error: {e}", flush=True)
             raise
         else:
-            print("Data Extraction successful")
+            print("Data Extraction successful", flush=True)
             return market_data
-
