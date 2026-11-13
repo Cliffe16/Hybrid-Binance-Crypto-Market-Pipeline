@@ -24,3 +24,5 @@ Thumbs.db
 
 # Virtual environments
 venv/
+
+.bak

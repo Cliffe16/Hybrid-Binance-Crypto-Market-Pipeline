@@ -5,6 +5,6 @@ datasources:
     type: marcusolsson-json-datasource
     uid: binance-api-live-data
     access: proxy
-    url: http://host.docker.internal:8000
+    url: http://host.docker.internal:8001
     isDefault: true
     editable: true
