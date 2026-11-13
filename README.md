@@ -3,9 +3,9 @@
 ![Architecture](https://img.shields.io/badge/Architecture-Distributed_Streaming-blue)
 ![Python](https://img.shields.io/badge/Python-3.12-blue)
 ![Apache Spark](https://img.shields.io/badge/Apache_Spark-3.4-orange)
-![Apache Kafka](https://img.shields.io/badge/Apache_Kafka-7.4-black)
+![Confluent Platform](https://img.shields.io/badge/Confluent_Platform-7.4-black)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-teal)
-
+ 
 ## Summary
 
 This is a distributed pipeline designed to turn heavy batch extraction from the Binanace API into streaming analytics with 30 second micro-batches.
@@ -21,6 +21,8 @@ The whole stack runs on a single laptop (12GB+ RAM recommended), which forced de
 ├── app.py                  # FastAPI serving layer
 ├── dags/                   # Airflow DAGs (binance_batch_pipeline)
 ├── src/
+│   ├── extraction/         # extract.py (Binance API calls)
+│   ├── ingestion/          # load.py (idempotent PostgreSQL loader)
 │   ├── processing/         # spark_processor.py (Structured Streaming job)
 │   └── utils/              # spark_utils.py, kafka_utils.py
 ├── docker/
@@ -35,12 +37,13 @@ The whole stack runs on a single laptop (12GB+ RAM recommended), which forced de
 ```
 
 ## System Architecture
+ 
+```text
+Binance API → Airflow → PostgreSQL (landing) → Debezium (CDC) → Kafka + Schema Registry
+                                                                        ↓
+                    Grafana ← FastAPI ← Cassandra (serving) ← Spark Structured Streaming
+```
 
-```
-            Binance/Kraken API → Airflow ingestion → PostgreSQL staging → Kafka
-                                                        ↓
-            Dashboard/API ← Cassandra serving ← Spark streaming processing
-```
 
 ## Data Flow 
 
@@ -56,7 +59,7 @@ The whole stack runs on a single laptop (12GB+ RAM recommended), which forced de
 4. **Stream Processing (PySpark):** 
    Apache Spark Structured Streaming consumes the Kafka topics in 30-second micro-batches. It deserializes Avro, casts schemas, flattens nested payloads, and writes the result to Cassandra. Candlesticks are already 1-minute aggregates from Binance, so they pass through without further windowing.
 5. **Serving Layer (Cassandra & FastAPI):** 
-   Processed metrics are written to Apache Cassandra, chosen for its high-write throughput. A decoupled FastAPI application acts as the serving layer, querying Cassandra and exposing RESTful endpoints (`/candlesticks`, `/order-books`, `/tickers`, `/trading_pairs`).
+   Processed metrics are written to Apache Cassandra, chosen for its high-write throughput. A decoupled FastAPI application acts as the serving layer, querying Cassandra and exposing RESTful endpoints (`/candlesticks`, `/order-books`, `/tickers`, `/trading-pairs`).
 
 ![Cassandra Query Results](docs/cassandra_query.png)
 
